@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <link rel="stylesheet" href="https://pyscript.net/releases/2024.1.1/core.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism-tomorrow.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/prism.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-python.min.js"></script>
+
+    <script type="module" src="https://pyscript.net/releases/2024.1.1/core.js"></script>
+    <title>Wasm Python IDE + Highlight</title>
+
+    <style>
+        body {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            font-family: 'Consolas', monospace;
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        .container {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+            padding: 10px;
+            gap: 10px;
+        }
+
+        /* Стили редактора с подсветкой */
+        .editor-section {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            position: relative;
+        }
+
+        .editor-wrapper {
+            flex: 1;
+            position: relative;
+            background: #252526;
+            border: 1px solid #3c3c3c;
+            overflow: hidden;
+        }
+
+        /* Textarea и Code должны быть идентичны по размеру и шрифту */
+        #code-editor,
+        #highlighting-layer {
+            margin: 0;
+            padding: 10px;
+            border: 0;
+            width: 100%;
+            height: 100%;
+            font-family: 'Consolas', monospace;
+            font-size: 14px;
+            line-height: 1.5;
+            position: absolute;
+            top: 0;
+            left: 0;
+            white-space: pre;
+            overflow: auto;
+            box-sizing: border-box;
+        }
+
+        #code-editor {
+            z-index: 1;
+            white-space: pre;
+            background: transparent;
+            color: transparent;
+            caret-color: white;
+            resize: none;
+            outline: none;
+        }
+
+        #highlighting-layer {
+            z-index: 0;
+            pointer-events: none;
+        }
+
+        code[class*="language-"] {
+            padding: 0 !important;
+            font-family: inherit !important;
+        }
+
+        .single-input {
+            background: #252526;
+            border: 1px solid #3c3c3c;
+            padding: 5px 10px;
+            display: flex;
+            align-items: center;
+        }
+
+        .single-input input {
+            background: transparent;
+            border: none;
+            color: #ce9178;
+            outline: none;
+            flex: 1;
+            font-family: inherit;
+        }
+
+        .console-section {
+            flex: 1;
+            background: #000;
+            border: 1px solid #333;
+            display: flex;
+            flex-direction: column;
+        }
+
+        #history {
+            flex: 1;
+            padding: 10px;
+            white-space: pre-wrap;
+            overflow-y: auto;
+            font-size: 13px;
+            color: #00ff00;
+        }
+
+        .controls {
+            padding: 10px;
+            background: #2d2d2d;
+            display: flex;
+            gap: 10px;
+        }
+
+        button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            padding: 8px 15px;
+            cursor: pointer;
+            font-family: inherit;
+        }
+
+        .clear-btn {
+            background: #444;
+        }
+    </style>
+</head>
+
+<body>
+<div class="controls">
+    <button py-click="run_multiline">▶ ЗАПУСТИТЬ КОД (Ctrl+Enter)</button>
+    <button onclick="downloadPyFile()" style="background: #2d7a44;">💾 СКАЧАТЬ .PY</button>
+    <button class="clear-btn" onclick="document.getElementById('history').innerHTML='--- Очищено ---'">
+        Очистить консоль
+    </button>
+    <span style="margin-left: auto; font-size: 12px; color: #888;">Python Wasm IDE + Syntax Highlighting</span>
+</div>
+
+    <div class="container">
+        <div class="editor-section">
+            <div class="editor-wrapper">
+                <pre id="highlighting-layer"
+                    aria-hidden="true"><code class="language-python" id="highlighting-content"></code></pre>
+                <textarea id="code-editor" spellcheck="false"
+                    oninput="updateHighlighting(this.value); syncScroll(this);" onscroll="syncScroll(this)"></textarea>
+            </div>
+
+            <div class="single-input">
+                <span style="color: #888; margin-right: 10px;">>>></span>
+                <input type="text" id="single-cmd" placeholder="Быстрая команда...">
+            </div>
+        </div>
+
+        <div class="console-section">
+            <div id="history">--- Консоль готова ---</div>
+        </div>
+    </div>
+
+    <script>
+const editor = document.getElementById('code-editor');
+
+// 1. Загрузка при старте
+window.onload = function() {
+    const savedCode = localStorage.getItem('pyscript_ide_code');
+    if (savedCode) {
+        editor.value = savedCode;
+        updateHighlighting(savedCode);
+    }
+};
+
+// 2. Автосохранение при вводе
+editor.addEventListener('input', function() {
+    localStorage.setItem('pyscript_ide_code', this.value);
+    updateHighlighting(this.value);
+    syncScroll(this);
+});
+
+// 3. Табуляция (оставляем твою любимую функцию)
+editor.addEventListener('keydown', function(e) {
+    if (e.key == 'Tab') {
+        e.preventDefault();
+        const start = this.selectionStart;
+        const end = this.selectionEnd;
+        this.value = this.value.substring(0, start) + "    " + this.value.substring(end);
+        this.selectionStart = this.selectionEnd = start + 4;
+        
+        // Принудительно сохраняем после Tab
+        localStorage.setItem('pyscript_ide_code', this.value);
+        updateHighlighting(this.value);
+    }
+});
+
+function updateHighlighting(text) {
+    let result_element = document.getElementById("highlighting-content");
+    result_element.textContent = text + (text.endsWith("\n") ? " " : "");
+    Prism.highlightElement(result_element);
+}
+
+function syncScroll(element) {
+    let result_element = document.getElementById("highlighting-layer");
+    result_element.scrollTop = element.scrollTop;
+    result_element.scrollLeft = element.scrollLeft;
+}
+
+function downloadPyFile() {
+    const code = document.getElementById('code-editor').value;
+    const blob = new Blob([code], { type: 'text/python' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'my_script.py'; 
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    window.URL.revokeObjectURL(url);
+}
+    </script>
+
+<script type="py">
+import js
+import sys
+from io import StringIO
+
+# Глобальный словарь для сохранения переменных
+env = globals()
+
+def log_to_console(text, is_error=False):
+    history = js.document.getElementById("history")
+    if not history: return
+    color = "#ff5555" if is_error else "#00ff00"
+    history.innerHTML += f"<div style='color: {color}'>{text}</div>"
+    history.scrollTop = history.scrollHeight
+
+def execute_python(code):
+    if not code.strip(): return
+    old_stdout = sys.stdout
+    redirected_output = sys.stdout = StringIO()
+    try:
+        # Выполняем код
+        exec(code, env)
+        output = redirected_output.getvalue()
+        if output: 
+            log_to_console(output.strip())
+    except Exception as e:
+        log_to_console(f"ОШИБКА: {e}", True)
+    finally:
+        sys.stdout = old_stdout
+
+def run_multiline(event=None):
+    editor = js.document.getElementById("code-editor")
+    if editor:
+        code = editor.value
+        log_to_console("<span style='color: #555'>--- Запуск ---</span>")
+        execute_python(code)
+
+def run_single(event):
+    # Код 13 — это Enter
+    if event.keyCode == 13:
+        input_el = js.document.getElementById("single-cmd")
+        code = input_el.value
+        input_el.value = ""
+        log_to_console(f"<span style='color: #888'>>>> {code}</span>")
+        execute_python(code)
+
+def check_keys(event):
+    # Ctrl + Enter
+    if event.ctrlKey and event.keyCode == 13:
+        event.preventDefault() # Чтобы не добавлялась новая строка
+        run_multiline()
+
+# Регистрация обработчиков событий
+js.document.getElementById("single-cmd").onkeydown = run_single
+js.document.getElementById("code-editor").onkeydown = check_keys
+
+# Инициализация при загрузке
+initial_code = "def test():\n    print('Highlighting works!')\n    print(2 * 2)\n\ntest()"
+editor = js.document.getElementById("code-editor")
+if editor:
+    editor.value = initial_code
+    # Вызываем JS функцию для первичной подсветки
+    js.updateHighlighting(initial_code)
+</script>
+
+</body>
+
+</html>
